@@ -85,6 +85,18 @@ def enable_github_pages(repo_name: str):
     
     if response.status_code not in [201, 409]:  # 409 means already exists
         raise Exception(f"Failed to enable pages: {response.status_code}, {response.text}")
+    
+    # Wait for pages to be enabled
+    time.sleep(2)
+    
+    # Trigger a pages build (optional, helps ensure deployment)
+    try:
+        requests.post(
+            f"https://api.github.com/repos/{GITHUB_USERNAME}/{repo_name}/pages/builds",
+            headers=headers
+        )
+    except:
+        pass  # This endpoint might not be available for all accounts
 
 
 def get_latest_commit_sha(repo_name: str, branch: str = "main") -> str:
@@ -111,14 +123,22 @@ def get_file_sha(repo_name: str, file_path: str) -> str:
         "Accept": "application/vnd.github+json"
     }
     
-    response = requests.get(
-        f"https://api.github.com/repos/{GITHUB_USERNAME}/{repo_name}/contents/{file_path}",
-        headers=headers
-    )
-    
-    if response.status_code == 200:
-        return response.json().get("sha", "")
-    return None
+    try:
+        response = requests.get(
+            f"https://api.github.com/repos/{GITHUB_USERNAME}/{repo_name}/contents/{file_path}",
+            headers=headers,
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("sha", "")
+        else:
+            print(f"File {file_path} not found (status {response.status_code}), will create new file")
+            return None
+    except Exception as e:
+        print(f"Error getting file SHA for {file_path}: {str(e)}")
+        return None
 
 
 def push_to_repo(repo_name: str, files: List[Dict[str, str]], round_num: int):
@@ -337,6 +357,9 @@ def round2(data: dict):
     task = data['task']
     nonce = data['nonce']
     repo_name = f"{task}"
+    
+    # Wait a bit to ensure GitHub has fully processed previous commits
+    time.sleep(3)
     
     # Generate updated code with LLM
     files = write_code_with_llm(
