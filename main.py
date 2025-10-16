@@ -341,6 +341,30 @@ def round2(data: dict):
     
     notify_evaluation(data['evaluation_url'], notification_data)
 
+@app.get("/debug_gemini")
+def debug_gemini():
+    try:
+        # List available models
+        available_models = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                available_models.append({
+                    "name": m.name,
+                    "display_name": m.display_name,
+                    "description": m.description
+                })
+        
+        return {
+            "status": "success",
+            "api_key_configured": bool(GOOGLE_API_KEY),
+            "available_models": available_models
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "api_key_configured": bool(GOOGLE_API_KEY)
+        }
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
