@@ -267,22 +267,51 @@ def notify_evaluation(evaluation_url: str, data: Dict[str, Any], retries: int = 
     """Notify evaluation endpoint with exponential backoff"""
     headers = {"Content-Type": "application/json"}
     
+    print(f"Attempting to notify evaluation endpoint: {evaluation_url}")
+    print(f"Notification data: {data}")
+    
     for attempt in range(retries):
         try:
-            response = requests.post(evaluation_url, json=data, headers=headers, timeout=30)
+            print(f"Attempt {attempt + 1}/{retries}...")
+            response = requests.post(
+                evaluation_url, 
+                json=data, 
+                headers=headers, 
+                timeout=30,
+                verify=True  # Verify SSL certificates
+            )
+            
+            print(f"Response status: {response.status_code}")
+            print(f"Response body: {response.text}")
+            
             if response.status_code == 200:
+                print("Notification successful!")
                 return response.json()
+            elif response.status_code in [201, 202, 204]:
+                # Some APIs return these for successful operations
+                print(f"Notification accepted with status {response.status_code}")
+                return {"status": "success"}
             else:
                 print(f"Evaluation API returned {response.status_code}: {response.text}")
+                
+        except requests.exceptions.Timeout as e:
+            print(f"Attempt {attempt + 1} timed out: {str(e)}")
+        except requests.exceptions.ConnectionError as e:
+            print(f"Attempt {attempt + 1} connection error: {str(e)}")
+        except requests.exceptions.RequestException as e:
+            print(f"Attempt {attempt + 1} request failed: {str(e)}")
         except Exception as e:
-            print(f"Attempt {attempt + 1} failed: {str(e)}")
+            print(f"Attempt {attempt + 1} unexpected error: {str(e)}")
         
         if attempt < retries - 1:
-            delay = 2 ** attempt  # Exponential backoff: 1, 2, 4, 8 seconds
+            delay = 2 ** attempt  # Exponential backoff: 1, 2, 4, 8, 16 seconds
+            print(f"Waiting {delay} seconds before retry...")
             time.sleep(delay)
     
-    raise Exception("Failed to notify evaluation endpoint after all retries")
-
+    # If all retries fail, log the error but don't crash the entire process
+    error_msg = f"Failed to notify evaluation endpoint after {retries} retries. URL: {evaluation_url}"
+    print(error_msg)
+    raise Exception(error_msg)
 
 def round1(data: dict):
     """Handle round 1: Create repo, generate code, deploy"""
@@ -373,7 +402,13 @@ jobs:
         "pages_url": pages_url
     }
     
-    notify_evaluation(data['evaluation_url'], notification_data)
+    try:
+        result = notify_evaluation(data['evaluation_url'], notification_data)
+        print(f"Notification result: {result}")
+    except Exception as e:
+        # Log the error but don't fail the entire process
+        print(f"Notification failed but deployment was successful: {str(e)}")
+        # You might want to store this in a database for manual retry later
 
 
 def round2(data: dict):
