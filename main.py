@@ -142,6 +142,39 @@ def push_to_repo(repo_name: str, files: List[Dict[str, str]], round_num: int):
             "content": file_content_b64
         }
         
+        # Get existing file SHA if it exists (for both round 1 and round 2)
+        file_sha = get_file_sha(repo_name, file_name)
+        if file_sha:
+            payload["sha"] = file_sha
+        
+        response = requests.put(
+            f"https://api.github.com/repos/{GITHUB_USERNAME}/{repo_name}/contents/{file_name}",
+            headers=headers,
+            json=payload
+        )
+        
+        if response.status_code not in [200, 201]:
+            raise Exception(f"Failed to push {file_name}: {response.status_code}, {response.text}")
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json"
+    }
+    
+    for file in files:
+        file_name = file.get("name")
+        file_content = file.get("content")
+        
+        # Encode content to base64 if not already
+        if not file_content.startswith("data:"):
+            file_content_b64 = base64.b64encode(file_content.encode()).decode()
+        else:
+            file_content_b64 = file_content
+        
+        payload = {
+            "message": f"Add/Update {file_name} (Round {round_num})",
+            "content": file_content_b64
+        }
+        
         # For round 2, get existing file SHA to update
         if round_num == 2:
             file_sha = get_file_sha(repo_name, file_name)
