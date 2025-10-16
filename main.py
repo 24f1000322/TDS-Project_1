@@ -63,40 +63,37 @@ def create_repo(repo_name: str) -> dict:
     
     return response.json()
 
-
-def enable_github_pages(repo_name: str):
+def enable_github_pages_with_actions(repo_name: str):
+    """Enable GitHub Pages with GitHub Actions as the source"""
     headers = {
         "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github+json"
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
     }
     
+    # Configure Pages to use GitHub Actions
     payload = {
-        "source": {
-            "branch": "main",
-            "path": "/"
-        }
+        "build_type": "workflow"
     }
     
+    # First, try to create/update pages configuration
     response = requests.post(
         f"https://api.github.com/repos/{GITHUB_USERNAME}/{repo_name}/pages",
         headers=headers,
         json=payload
     )
     
-    if response.status_code not in [201, 409]:  # 409 means already exists
-        raise Exception(f"Failed to enable pages: {response.status_code}, {response.text}")
-    
-    # Wait for pages to be enabled
-    time.sleep(2)
-    
-    # Trigger a pages build (optional, helps ensure deployment)
-    try:
-        requests.post(
-            f"https://api.github.com/repos/{GITHUB_USERNAME}/{repo_name}/pages/builds",
-            headers=headers
+    if response.status_code == 409:
+        # Pages already exists, update it
+        response = requests.put(
+            f"https://api.github.com/repos/{GITHUB_USERNAME}/{repo_name}/pages",
+            headers=headers,
+            json=payload
         )
-    except:
-        pass  # This endpoint might not be available for all accounts
+    
+    if response.status_code not in [200, 201, 204, 409]:
+        print(f"Warning: Failed to configure pages: {response.status_code}, {response.text}")
+        # Don't raise exception, as the workflow will still trigger
 
 
 def get_latest_commit_sha(repo_name: str, branch: str = "main") -> str:
@@ -144,7 +141,8 @@ def get_file_sha(repo_name: str, file_path: str) -> str:
 def push_to_repo(repo_name: str, files: List[Dict[str, str]], round_num: int):
     headers = {
         "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github+json"
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
     }
     
     for file in files:
@@ -157,13 +155,26 @@ def push_to_repo(repo_name: str, files: List[Dict[str, str]], round_num: int):
         else:
             file_content_b64 = file_content
         
+        # Always try to get the current file SHA first
+        file_sha = None
+        try:
+            check_response = requests.get(
+                f"https://api.github.com/repos/{GITHUB_USERNAME}/{repo_name}/contents/{file_name}",
+                headers=headers,
+                timeout=10
+            )
+            if check_response.status_code == 200:
+                file_sha = check_response.json().get("sha")
+                print(f"Found existing {file_name} with SHA: {file_sha[:7]}...")
+        except Exception as e:
+            print(f"No existing {file_name} found, creating new: {str(e)}")
+        
         payload = {
             "message": f"Add/Update {file_name} (Round {round_num})",
-            "content": file_content_b64
+            "content": file_content_b64,
+            "branch": "main"
         }
         
-        # Get existing file SHA if it exists (for both round 1 and round 2)
-        file_sha = get_file_sha(repo_name, file_name)
         if file_sha:
             payload["sha"] = file_sha
         
@@ -175,40 +186,11 @@ def push_to_repo(repo_name: str, files: List[Dict[str, str]], round_num: int):
         
         if response.status_code not in [200, 201]:
             raise Exception(f"Failed to push {file_name}: {response.status_code}, {response.text}")
-    headers = {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github+json"
-    }
-    
-    for file in files:
-        file_name = file.get("name")
-        file_content = file.get("content")
-        
-        # Encode content to base64 if not already
-        if not file_content.startswith("data:"):
-            file_content_b64 = base64.b64encode(file_content.encode()).decode()
         else:
-            file_content_b64 = file_content
+            print(f"Successfully pushed {file_name}")
         
-        payload = {
-            "message": f"Add/Update {file_name} (Round {round_num})",
-            "content": file_content_b64
-        }
-        
-        # For round 2, get existing file SHA to update
-        if round_num == 2:
-            file_sha = get_file_sha(repo_name, file_name)
-            if file_sha:
-                payload["sha"] = file_sha
-        
-        response = requests.put(
-            f"https://api.github.com/repos/{GITHUB_USERNAME}/{repo_name}/contents/{file_name}",
-            headers=headers,
-            json=payload
-        )
-        
-        if response.status_code not in [200, 201]:
-            raise Exception(f"Failed to push {file_name}: {response.status_code}, {response.text}")
+        # Small delay between file pushes
+        time.sleep(0.5)
 
 
 def write_code_with_llm(brief: str, checks: List[str], attachments: List[Dict], task: str) -> List[Dict[str, str]]:
@@ -323,14 +305,56 @@ def round1(data: dict):
         task=task
     )
     
+    # Add GitHub Actions workflow for Pages deployment
+    workflow_content = """name: Deploy static content to Pages
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '.'
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+"""
+    
+    files.append({
+        "name": ".github/workflows/static.yml",
+        "content": workflow_content
+    })
+    
     # Push files to repo
     push_to_repo(repo_name, files, round_num=1)
     
     # Wait for commit to be processed
     time.sleep(2)
     
-    # Enable GitHub Pages
-    enable_github_pages(repo_name)
+    # Enable GitHub Pages with GitHub Actions as source
+    enable_github_pages_with_actions(repo_name)
     
     # Get latest commit SHA
     commit_sha = get_latest_commit_sha(repo_name)
